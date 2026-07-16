@@ -1,6 +1,8 @@
 const postgres = require('postgres');
 
-const url = process.env.DATABASE_URL;
+// DATABASE_URL is the manual setting; POSTGRES_URL is set automatically by
+// the Vercel <-> Supabase integration when the two projects are linked.
+const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 
 // max: 1 and prepare: false keep this safe for serverless (Vercel) and for
 // Supabase's transaction-mode connection pooler.
@@ -22,8 +24,8 @@ if (url) {
 } else {
   const fail = () => {
     throw new Error(
-      'DATABASE_URL is not set — add it in Vercel → Settings → Environment Variables ' +
-        '(Supabase connection string, pooler URI) and redeploy.'
+      'No database is configured — link the Supabase integration to this Vercel project ' +
+        '(or set DATABASE_URL in Vercel → Settings → Environment Variables) and redeploy.'
     );
   };
   sql = new Proxy(fail, { apply: fail, get: fail });

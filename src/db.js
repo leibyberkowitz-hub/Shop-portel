@@ -1,25 +1,33 @@
 const postgres = require('postgres');
 
 const url = process.env.DATABASE_URL;
-if (!url) {
-  throw new Error(
-    'DATABASE_URL is not set. Point it at your Postgres database ' +
-      '(for Supabase: Project Settings → Database → Connection string, use the pooler URI).'
-  );
-}
 
 // max: 1 and prepare: false keep this safe for serverless (Vercel) and for
 // Supabase's transaction-mode connection pooler.
-const sql = postgres(url, {
-  max: 1,
-  prepare: false,
-  idle_timeout: 20,
-  connect_timeout: 15,
-  types: {
-    numeric: { to: 1700, from: [1700], serialize: (v) => String(v), parse: (v) => Number(v) },
-    int8: { to: 20, from: [20], serialize: (v) => String(v), parse: (v) => Number(v) },
-  },
-});
+//
+// When DATABASE_URL is missing we don't crash at startup — every query throws
+// a clear message instead, which the API error handler shows to the admin.
+let sql;
+if (url) {
+  sql = postgres(url, {
+    max: 1,
+    prepare: false,
+    idle_timeout: 20,
+    connect_timeout: 15,
+    types: {
+      numeric: { to: 1700, from: [1700], serialize: (v) => String(v), parse: (v) => Number(v) },
+      int8: { to: 20, from: [20], serialize: (v) => String(v), parse: (v) => Number(v) },
+    },
+  });
+} else {
+  const fail = () => {
+    throw new Error(
+      'DATABASE_URL is not set — add it in Vercel → Settings → Environment Variables ' +
+        '(Supabase connection string, pooler URI) and redeploy.'
+    );
+  };
+  sql = new Proxy(fail, { apply: fail, get: fail });
+}
 
 async function getSettings() {
   const rows = await sql`SELECT key, value FROM settings`;

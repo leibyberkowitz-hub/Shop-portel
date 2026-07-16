@@ -999,9 +999,27 @@ function renderAuthPage(mode) {
 
 // ---------- boot ----------
 
+function renderFatalError(message) {
+  document.body.classList.add('auth-mode');
+  main.innerHTML = `
+    <div class="auth-page">
+      <div class="auth-card">
+        <div class="auth-logo">⚠️</div>
+        <h1>Something needs fixing</h1>
+        <p class="auth-sub">${esc(message)}</p>
+        <button class="btn primary big" onclick="location.reload()">Try again</button>
+      </div>
+    </div>
+  `;
+}
+
 (async function init() {
   try {
-    const me = await (await fetch('/api/auth/me')).json();
+    const res = await fetch('/api/auth/me');
+    const me = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return renderFatalError(me.error || `The server returned an error (${res.status}).`);
+    }
     if (me.setup_required) return renderAuthPage('setup');
     if (!me.authenticated) return renderAuthPage('login');
     currentUser = me.user;

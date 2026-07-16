@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fish Shop Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">🐟 <span id="brand-name">Fish Shop</span></div>
+    <nav>
+      <button class="nav-btn active" data-view="dashboard">📋 Today</button>
+      <button class="nav-btn" data-view="orders">🧾 Orders</button>
+      <button class="nav-btn" data-view="deliveries">🚚 Deliveries</button>
+      <button class="nav-btn" data-view="customers">👤 Customers</button>
+      <button class="nav-btn" data-view="products">🐠 Products</button>
+      <button class="nav-btn" data-view="messages">💬 Messages</button>
+      <button class="nav-btn" data-view="settings">⚙️ Settings</button>
+    </nav>
+    <button id="new-order-btn" class="btn primary big">+ New Order</button>
+    <div id="sms-mode" class="sms-mode"></div>
+  </aside>
+
+  <main id="main"></main>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div id="modal" class="modal"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

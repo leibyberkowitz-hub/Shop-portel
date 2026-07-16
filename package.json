@@ -1,0 +1,19 @@
+{
+  "name": "fish-shop-manager",
+  "version": "1.0.0",
+  "description": "Order, delivery and customer-SMS management for a fish shop taking phone orders",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js",
+    "test": "node test/smoke.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "express": "^5.2.1"
+  }
+}

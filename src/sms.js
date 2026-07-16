@@ -1,9 +1,4 @@
-const { db, getSettings } = require('./db');
-
-const insertMessage = db.prepare(`
-  INSERT INTO messages (customer_id, order_id, phone, body, status, detail)
-  VALUES (?, ?, ?, ?, ?, ?)
-`);
+const { sql } = require('./db');
 
 function twilioConfigured() {
   return Boolean(
@@ -11,6 +6,12 @@ function twilioConfigured() {
       process.env.TWILIO_AUTH_TOKEN &&
       process.env.TWILIO_FROM_NUMBER
   );
+}
+
+async function logMessage(customerId, orderId, phone, body, status, detail = '') {
+  await sql`
+    INSERT INTO messages (customer_id, order_id, phone, body, status, detail)
+    VALUES (${customerId}, ${orderId}, ${phone}, ${body}, ${status}, ${detail})`;
 }
 
 async function sendViaTwilio(to, body) {
@@ -42,16 +43,16 @@ async function sendSms({ phone, body, customerId = null, orderId = null }) {
     return { ok: false, status: 'failed', detail: 'Missing phone or message body' };
   }
   if (!twilioConfigured()) {
-    insertMessage.run(customerId, orderId, phone, body, 'simulated', 'Twilio not configured');
+    await logMessage(customerId, orderId, phone, body, 'simulated', 'Twilio not configured');
     console.log(`[SMS simulated] to ${phone}: ${body}`);
     return { ok: true, status: 'simulated' };
   }
   try {
     const twilioSid = await sendViaTwilio(phone, body);
-    insertMessage.run(customerId, orderId, phone, body, 'sent', twilioSid);
+    await logMessage(customerId, orderId, phone, body, 'sent', twilioSid);
     return { ok: true, status: 'sent' };
   } catch (err) {
-    insertMessage.run(customerId, orderId, phone, body, 'failed', err.message);
+    await logMessage(customerId, orderId, phone, body, 'failed', err.message);
     console.error(`[SMS failed] to ${phone}: ${err.message}`);
     return { ok: false, status: 'failed', detail: err.message };
   }
@@ -74,8 +75,7 @@ function renderTemplate(template, order, customer, settings) {
 
 // Returns the rendered status-update text for an order, or null when no
 // template applies to this status transition.
-function messageForStatus(order, customer) {
-  const settings = getSettings();
+function messageForStatus(order, customer, settings) {
   const templateByStatus = {
     confirmed: settings.sms_confirmed,
     ready: settings.sms_ready,

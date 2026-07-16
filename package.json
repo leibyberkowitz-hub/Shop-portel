@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "seed": "node seed.js",
+    "db:setup": "node scripts/setup-db.js",
     "test": "node test/smoke.test.js"
   },
   "engines": {
@@ -13,7 +13,7 @@
   },
   "license": "ISC",
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "postgres": "^3.4.9"
   }
 }

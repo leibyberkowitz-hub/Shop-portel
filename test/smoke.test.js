@@ -1,31 +1,38 @@
-/* End-to-end smoke test: boots the server against a temp database and walks
-   through the main flows — products, customers, order intake, status updates
-   with SMS logging, deliveries and settings. Run with: npm test */
+/* End-to-end smoke test: boots the server against a disposable Postgres
+   database and walks through the main flows — login, products, customers,
+   order intake, status updates with SMS logging, deliveries and settings.
+
+   Needs a throwaway database: set TEST_DATABASE_URL (its public schema is
+   DROPPED each run). Skips cleanly when no test database is reachable.
+   Run with: npm test */
 const assert = require('assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const postgres = require('postgres');
 
 const PORT = 3999;
 const BASE = `http://localhost:${PORT}/api`;
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fishshop-test-'));
+const PASSWORD = 'test-pass-123';
+const DB_URL = process.env.TEST_DATABASE_URL || 'postgres://postgres@127.0.0.1:5433/fishshop_test';
+
+let cookie = '';
 
 async function api(pathname, options = {}) {
   const res = await fetch(`${BASE}${pathname}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  return { status: res.status, data };
+  return { status: res.status, data, headers: res.headers };
 }
 
 async function waitForServer(tries = 50) {
   for (let i = 0; i < tries; i++) {
     try {
-      const { status } = await api('/settings');
-      if (status === 200) return;
+      const res = await fetch(`${BASE}/settings`);
+      if (res.status === 200 || res.status === 401) return;
     } catch {
       /* not up yet */
     }
@@ -34,16 +41,45 @@ async function waitForServer(tries = 50) {
   throw new Error('Server did not start');
 }
 
+async function prepareDatabase() {
+  const sql = postgres(DB_URL, { max: 1, connect_timeout: 5 });
+  try {
+    await sql`SELECT 1`;
+  } catch (err) {
+    await sql.end().catch(() => {});
+    console.log(`SKIPPED: no test database reachable at ${DB_URL} (${err.message})`);
+    console.log('Set TEST_DATABASE_URL to a disposable Postgres database to run the smoke test.');
+    process.exit(0);
+  }
+  await sql.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+  await sql.unsafe(fs.readFileSync(path.join(__dirname, '..', 'db', 'schema.sql'), 'utf8'));
+  await sql.end();
+}
+
 async function run() {
+  // --- auth ---
+  let res = await api('/settings');
+  assert.equal(res.status, 401, 'API requires login when STAFF_PASSWORD is set');
+  res = await api('/login', { method: 'POST', body: { password: 'wrong' } });
+  assert.equal(res.status, 401, 'wrong password rejected');
+  res = await api('/login', { method: 'POST', body: { password: PASSWORD } });
+  assert.equal(res.status, 200);
+  cookie = (res.headers.get('set-cookie') || '').split(';')[0];
+  assert.ok(cookie.startsWith('shop_auth='), 'login sets session cookie');
+
   // --- settings ---
   const settings = (await api('/settings')).data;
   assert.equal(settings.twilio_configured, false, 'test runs in simulation mode');
+  assert.equal(settings.auth_enabled, true);
   assert.ok(settings.sms_confirmed.includes('{order}'));
 
-  // --- products ---
-  let res = await api('/products', { method: 'POST', body: { name: 'Salmon fillet', unit: 'lb', price: 14.99 } });
+  // --- products (seeded by schema.sql) ---
+  const seeded = (await api('/products')).data;
+  assert.ok(seeded.length >= 10, 'starter catalog seeded');
+  assert.equal(typeof seeded[0].price, 'number', 'numeric comes back as JS number');
+  res = await api('/products', { method: 'POST', body: { name: 'Test mackerel', unit: 'lb', price: 5.5 } });
   assert.equal(res.status, 201);
-  const salmon = res.data;
+  const salmon = seeded.find((p) => p.name === 'Salmon fillet');
 
   // --- customer created implicitly through order intake ---
   res = await api('/orders', {
@@ -137,21 +173,30 @@ async function run() {
   console.log('All smoke tests passed ✅');
 }
 
-const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, TWILIO_ACCOUNT_SID: '', TWILIO_AUTH_TOKEN: '', TWILIO_FROM_NUMBER: '' },
-  stdio: ['ignore', 'pipe', 'inherit'],
-});
-
-waitForServer()
+let server;
+prepareDatabase()
+  .then(() => {
+    server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+      env: {
+        ...process.env,
+        PORT: String(PORT),
+        DATABASE_URL: DB_URL,
+        STAFF_PASSWORD: PASSWORD,
+        TWILIO_ACCOUNT_SID: '',
+        TWILIO_AUTH_TOKEN: '',
+        TWILIO_FROM_NUMBER: '',
+      },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    return waitForServer();
+  })
   .then(run)
   .then(() => {
     server.kill();
-    fs.rmSync(dataDir, { recursive: true, force: true });
     process.exit(0);
   })
   .catch((err) => {
     console.error(err);
-    server.kill();
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    if (server) server.kill();
     process.exit(1);
   });

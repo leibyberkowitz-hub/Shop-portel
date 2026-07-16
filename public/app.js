@@ -48,8 +48,45 @@ async function api(path, options = {}) {
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    showLoginOverlay();
+    throw new Error('Please log in');
+  }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+let loginShowing = false;
+function showLoginOverlay() {
+  if (loginShowing) return;
+  loginShowing = true;
+  openModal(`
+    <h1>🐟 Staff login</h1>
+    <div class="field"><label>Password</label>
+      <input id="login-password" type="password" autocomplete="current-password" />
+    </div>
+    <p id="login-error" class="muted" style="color:var(--red)"></p>
+    <div class="modal-actions">
+      <button class="btn primary" id="login-btn">Log in</button>
+    </div>
+  `);
+  const submit = async () => {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('#login-password').value }),
+    });
+    if (res.ok) {
+      location.reload();
+    } else {
+      $('#login-error').textContent = 'Wrong password — try again.';
+      $('#login-password').value = '';
+      $('#login-password').focus();
+    }
+  };
+  $('#login-btn').addEventListener('click', submit);
+  $('#login-password').addEventListener('keydown', (e) => e.key === 'Enter' && submit());
+  $('#login-password').focus();
 }
 
 function toast(message, isError = false) {
@@ -98,16 +135,20 @@ function closeModal() {
 }
 
 $('#modal-backdrop').addEventListener('click', (e) => {
-  if (e.target.id === 'modal-backdrop') closeModal();
+  if (e.target.id === 'modal-backdrop' && !loginShowing) closeModal();
 });
 
 // ---------- navigation ----------
 
 const views = {};
 let currentView = 'dashboard';
+// Incremented on every navigation; async view renderers capture it and bail
+// out if another navigation happened while they were fetching.
+let navToken = 0;
 
 function navigate(view, arg) {
   currentView = view;
+  navToken++;
   $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   views[view](arg);
 }
@@ -152,7 +193,9 @@ function bindOrderRows(container) {
 // ---------- dashboard ----------
 
 views.dashboard = async function renderDashboard() {
+  const token = navToken;
   const d = await api('/dashboard');
+  if (token !== navToken) return;
   main.innerHTML = `
     <div class="view-header"><h1>Today — ${esc(d.today)}</h1></div>
     <div class="stats">
@@ -198,8 +241,10 @@ views.orders = async function renderOrders() {
     if ($('#f-type').value) params.set('type', $('#f-type').value);
     if ($('#f-date').value) params.set('date', $('#f-date').value);
     const orders = await api(`/orders?${params}`);
-    $('#orders-list').innerHTML = ordersTable(orders);
-    bindOrderRows($('#orders-list'));
+    const el = $('#orders-list');
+    if (!el) return;
+    el.innerHTML = ordersTable(orders);
+    bindOrderRows(el);
   }
   ['f-q', 'f-status', 'f-type', 'f-date'].forEach((id) =>
     $(`#${id}`).addEventListener('input', load)
@@ -223,9 +268,11 @@ views.deliveries = async function renderDeliveries() {
   async function load() {
     const date = $('#d-date').value;
     const orders = await api(`/orders?type=delivery&date=${date}`);
+    const listEl = $('#deliveries-list');
+    if (!listEl) return;
     const active = orders.filter((o) => !['cancelled'].includes(o.status));
     if (!active.length) {
-      $('#deliveries-list').innerHTML = '<div class="empty">No deliveries scheduled for this date.</div>';
+      listEl.innerHTML = '<div class="empty">No deliveries scheduled for this date.</div>';
       return;
     }
     const rows = active
@@ -241,12 +288,12 @@ views.deliveries = async function renderDeliveries() {
         </tr>`
       )
       .join('');
-    $('#deliveries-list').innerHTML = `
+    listEl.innerHTML = `
       <div class="table-wrap"><table>
         <thead><tr><th>Order</th><th>Customer</th><th>Address</th><th>Time</th><th>Status</th><th>Total</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`;
-    bindOrderRows($('#deliveries-list'));
+    bindOrderRows(listEl);
   }
   $('#d-date').addEventListener('input', load);
   await load();
@@ -268,8 +315,10 @@ views.customers = async function renderCustomers() {
   async function load() {
     const q = $('#c-q').value.trim();
     const customers = await api(`/customers?q=${encodeURIComponent(q)}`);
+    const listEl = $('#customers-list');
+    if (!listEl) return;
     if (!customers.length) {
-      $('#customers-list').innerHTML = '<div class="empty">No customers yet.</div>';
+      listEl.innerHTML = '<div class="empty">No customers yet.</div>';
       return;
     }
     const rows = customers
@@ -283,12 +332,12 @@ views.customers = async function renderCustomers() {
         </tr>`
       )
       .join('');
-    $('#customers-list').innerHTML = `
+    listEl.innerHTML = `
       <div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Phone</th><th>Address</th><th>Notes</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`;
-    $$('tr[data-customer]', $('#customers-list')).forEach((tr) =>
+    $$('tr[data-customer]', listEl).forEach((tr) =>
       tr.addEventListener('click', () => openCustomerModal(Number(tr.dataset.customer)))
     );
   }
@@ -388,7 +437,9 @@ function openSendTextModal(customer, orderId = null) {
 // ---------- products ----------
 
 views.products = async function renderProducts() {
+  const token = navToken;
   const list = await api('/products?all=1');
+  if (token !== navToken) return;
   main.innerHTML = `
     <div class="view-header">
       <h1>Products</h1>
@@ -466,7 +517,9 @@ function openProductForm(product = null) {
 // ---------- messages ----------
 
 views.messages = async function renderMessages() {
+  const token = navToken;
   const messages = await api('/messages');
+  if (token !== navToken) return;
   main.innerHTML = `
     <div class="view-header"><h1>Message log</h1></div>
     ${
@@ -494,7 +547,9 @@ views.messages = async function renderMessages() {
 // ---------- settings ----------
 
 views.settings = async function renderSettings() {
+  const token = navToken;
   const s = await api('/settings');
+  if (token !== navToken) return;
   const templateField = (key, label) => `
     <div class="field"><label>${label}</label>
       <textarea data-setting="${key}" rows="2">${esc(s[key])}</textarea>
@@ -528,7 +583,12 @@ views.settings = async function renderSettings() {
       ${templateField('sms_cancelled', 'Cancelled')}
     </div>
     <button class="btn primary big" id="s-save">Save settings</button>
+    ${s.auth_enabled ? '<button class="btn big" id="s-logout" style="margin-left:8px">Log out</button>' : ''}
   `;
+  $('#s-logout')?.addEventListener('click', async () => {
+    await fetch('/api/logout', { method: 'POST' });
+    location.reload();
+  });
   $('#s-save').addEventListener('click', async () => {
     const body = { auto_sms: $('#s-auto').checked ? '1' : '0' };
     $$('[data-setting]').forEach((el) => (body[el.dataset.setting] = el.value));

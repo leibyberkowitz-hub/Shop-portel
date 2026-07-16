@@ -58,10 +58,17 @@ async function sendSms({ phone, body, customerId = null, orderId = null }) {
   }
 }
 
+// 2026-07-16 → 16/07/2026 for customer-facing texts.
+function ukDate(iso) {
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
 function renderTemplate(template, order, customer, settings) {
   let when = '';
   if (order.due_date) {
-    when = order.type === 'delivery' ? `Delivery: ${order.due_date}` : `Pickup: ${order.due_date}`;
+    const date = ukDate(order.due_date);
+    when = order.type === 'delivery' ? `Delivery: ${date}` : `Pickup: ${date}`;
     if (order.time_slot) when += ` (${order.time_slot})`;
     when += '. ';
   }

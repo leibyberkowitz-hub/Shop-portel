@@ -13,7 +13,6 @@ const postgres = require('postgres');
 
 const PORT = 3999;
 const BASE = `http://localhost:${PORT}/api`;
-const PASSWORD = 'test-pass-123';
 const DB_URL = process.env.TEST_DATABASE_URL || 'postgres://postgres@127.0.0.1:5433/fishshop_test';
 
 let cookie = '';
@@ -57,29 +56,61 @@ async function prepareDatabase() {
 }
 
 async function run() {
-  // --- auth ---
-  let res = await api('/settings');
-  assert.equal(res.status, 401, 'API requires login when STAFF_PASSWORD is set');
-  res = await api('/login', { method: 'POST', body: { password: 'wrong' } });
-  assert.equal(res.status, 401, 'wrong password rejected');
-  res = await api('/login', { method: 'POST', body: { password: PASSWORD } });
-  assert.equal(res.status, 200);
+  // --- first-run setup ---
+  let res = await api('/auth/me');
+  assert.equal(res.data.setup_required, true, 'fresh database requires setup');
+  res = await api('/settings');
+  assert.equal(res.status, 401, 'API requires login');
+  res = await api('/setup', { method: 'POST', body: { name: 'Leiby', username: 'leiby', password: '12345' } });
+  assert.equal(res.status, 400, 'short password rejected');
+  res = await api('/setup', { method: 'POST', body: { name: 'Leiby', username: 'Leiby', password: 'gefilte123' } });
+  assert.equal(res.status, 201);
   cookie = (res.headers.get('set-cookie') || '').split(';')[0];
-  assert.ok(cookie.startsWith('shop_auth='), 'login sets session cookie');
+  assert.ok(cookie.startsWith('shop_session='), 'setup sets session cookie');
+  res = await api('/setup', { method: 'POST', body: { name: 'X', username: 'x2', password: 'hijack123' } });
+  assert.equal(res.status, 403, 'setup only works once');
 
-  // --- settings ---
+  // --- login ---
+  cookie = '';
+  res = await api('/login', { method: 'POST', body: { username: 'leiby', password: 'wrong' } });
+  assert.equal(res.status, 401, 'wrong password rejected');
+  res = await api('/login', { method: 'POST', body: { username: 'LEIBY', password: 'gefilte123' } });
+  assert.equal(res.status, 200, 'username is case-insensitive');
+  cookie = (res.headers.get('set-cookie') || '').split(';')[0];
+  res = await api('/auth/me');
+  assert.equal(res.data.authenticated, true);
+  assert.equal(res.data.user.name, 'Leiby');
+
+  // --- staff management ---
+  res = await api('/users', { method: 'POST', body: { name: 'Dovid', username: 'dovid', password: 'herring99' } });
+  assert.equal(res.status, 201);
+  const dovid = res.data;
+  res = await api('/users', { method: 'POST', body: { name: 'Dup', username: 'dovid', password: 'other123' } });
+  assert.equal(res.status, 409, 'duplicate username rejected');
+  res = await api(`/users/${dovid.id}`, { method: 'PUT', body: { password: 'newpass77' } });
+  assert.equal(res.status, 200);
+  const meId = (await api('/auth/me')).data.user.id;
+  res = await api(`/users/${meId}`, { method: 'DELETE' });
+  assert.equal(res.status, 400, 'cannot delete own account');
+  res = await api(`/users/${dovid.id}`, { method: 'DELETE' });
+  assert.equal(res.status, 200);
+  assert.equal((await api('/users')).data.length, 1);
+
+  // --- settings (UK defaults) ---
   const settings = (await api('/settings')).data;
   assert.equal(settings.twilio_configured, false, 'test runs in simulation mode');
-  assert.equal(settings.auth_enabled, true);
+  assert.equal(settings.session_secret, undefined, 'session secret never leaves the server');
   assert.ok(settings.sms_confirmed.includes('{order}'));
+  assert.ok(settings.sms_confirmed.includes('£{total}'), 'templates use pounds');
 
   // --- products (seeded by schema.sql) ---
   const seeded = (await api('/products')).data;
   assert.ok(seeded.length >= 10, 'starter catalog seeded');
   assert.equal(typeof seeded[0].price, 'number', 'numeric comes back as JS number');
-  res = await api('/products', { method: 'POST', body: { name: 'Test mackerel', unit: 'lb', price: 5.5 } });
+  res = await api('/products', { method: 'POST', body: { name: 'Test mackerel', unit: 'kg', price: 5.5 } });
   assert.equal(res.status, 201);
   const salmon = seeded.find((p) => p.name === 'Salmon fillet');
+  assert.equal(salmon.unit, 'kg', 'catalog is metric');
 
   // --- customer created implicitly through order intake ---
   res = await api('/orders', {
@@ -92,7 +123,7 @@ async function run() {
       time_slot: '2-4pm',
       address: '12 Main St',
       items: [
-        { product_id: salmon.id, name: 'Salmon fillet', quantity: 2, unit: 'lb', unit_price: 14.99 },
+        { product_id: salmon.id, name: 'Salmon fillet', quantity: 2, unit: 'kg', unit_price: 14.99 },
         { name: 'Custom smoked trout', quantity: 1, unit: 'each', unit_price: 9.5 },
       ],
     },
@@ -181,7 +212,6 @@ prepareDatabase()
         ...process.env,
         PORT: String(PORT),
         DATABASE_URL: DB_URL,
-        STAFF_PASSWORD: PASSWORD,
         TWILIO_ACCOUNT_SID: '',
         TWILIO_AUTH_TOKEN: '',
         TWILIO_FROM_NUMBER: '',

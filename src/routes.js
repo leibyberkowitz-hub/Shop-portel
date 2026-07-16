@@ -1,7 +1,7 @@
 const express = require('express');
 const { sql, getSettings, setSettings } = require('./db');
 const { sendSms, messageForStatus, twilioConfigured } = require('./sms');
-const { authEnabled } = require('./auth');
+const { hashPassword, validCredentials } = require('./auth');
 
 const router = express.Router();
 
@@ -325,14 +325,63 @@ router.post('/messages/send', async (req, res) => {
   res.status(result.ok ? 200 : 502).json(result);
 });
 
+// ---------- Staff accounts ----------
+
+router.get('/users', async (req, res) => {
+  const rows = await sql`
+    SELECT id, username, name, ${TS('created_at')} FROM users ORDER BY name`;
+  res.json(rows);
+});
+
+router.post('/users', async (req, res) => {
+  const { name = '', username = '', password = '' } = req.body || {};
+  if (!validCredentials(res, username, password, name)) return;
+  try {
+    const [user] = await sql`
+      INSERT INTO users (username, name, password_hash)
+      VALUES (${username.trim().toLowerCase()}, ${name.trim()}, ${hashPassword(password)})
+      RETURNING id, username, name`;
+    res.status(201).json(user);
+  } catch (err) {
+    if (err.code === UNIQUE_VIOLATION) {
+      return res.status(409).json({ error: 'That username is already taken' });
+    }
+    throw err;
+  }
+});
+
+router.put('/users/:id', async (req, res) => {
+  const id = idParam(req);
+  const [user] = id ? await sql`SELECT * FROM users WHERE id = ${id}` : [];
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const { name, password } = req.body || {};
+  if (password !== undefined && String(password).length < 6) {
+    return badRequest(res, 'Password must be at least 6 characters');
+  }
+  const [updated] = await sql`
+    UPDATE users SET
+      name = ${(name ?? user.name).trim()},
+      password_hash = ${password !== undefined ? hashPassword(String(password)) : user.password_hash}
+    WHERE id = ${id} RETURNING id, username, name`;
+  res.json(updated);
+});
+
+router.delete('/users/:id', async (req, res) => {
+  const id = idParam(req);
+  const [user] = id ? await sql`SELECT id FROM users WHERE id = ${id}` : [];
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (id === req.user.id) return badRequest(res, 'You cannot remove your own account');
+  const [{ count }] = await sql`SELECT count(*)::int AS count FROM users`;
+  if (count <= 1) return badRequest(res, 'Cannot remove the last account');
+  await sql`DELETE FROM users WHERE id = ${id}`;
+  res.json({ ok: true });
+});
+
 // ---------- Settings & dashboard ----------
 
 async function settingsResponse() {
-  return {
-    ...(await getSettings()),
-    twilio_configured: twilioConfigured(),
-    auth_enabled: authEnabled(),
-  };
+  const { session_secret, ...settings } = await getSettings();
+  return { ...settings, twilio_configured: twilioConfigured() };
 }
 
 router.get('/settings', async (req, res) => {

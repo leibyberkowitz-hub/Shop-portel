@@ -62,6 +62,14 @@ create table if not exists settings (
   value text not null default ''
 );
 
+create table if not exists users (
+  id bigint generated always as identity primary key,
+  username text not null unique,
+  name text not null,
+  password_hash text not null,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists idx_orders_status on orders(status);
 create index if not exists idx_orders_due_date on orders(due_date);
 create index if not exists idx_order_items_order on order_items(order_id);
@@ -76,12 +84,13 @@ alter table orders enable row level security;
 alter table order_items enable row level security;
 alter table messages enable row level security;
 alter table settings enable row level security;
+alter table users enable row level security;
 
 insert into settings (key, value) values
   ('shop_name', 'The Fish Shop'),
   ('auto_sms', '1'),
-  ('sms_confirmed', 'Hi {name}, your order #{order} from {shop} is confirmed. Total: ${total}. {when}We will text you with updates.'),
-  ('sms_ready', 'Hi {name}, your order #{order} from {shop} is ready for pickup! Total: ${total}.'),
+  ('sms_confirmed', 'Hi {name}, your order #{order} from {shop} is confirmed. Total: £{total}. {when}We will text you with updates.'),
+  ('sms_ready', 'Hi {name}, your order #{order} from {shop} is ready for pickup! Total: £{total}.'),
   ('sms_out_for_delivery', 'Hi {name}, your order #{order} from {shop} is out for delivery. {when}'),
   ('sms_delivered', 'Hi {name}, your order #{order} from {shop} has been delivered. Thank you!'),
   ('sms_cancelled', 'Hi {name}, your order #{order} from {shop} has been cancelled. Call us with any questions.')
@@ -90,17 +99,17 @@ on conflict (key) do nothing;
 -- Starter catalog, only when the products table is empty.
 insert into products (name, unit, price)
 select v.name, v.unit, v.price from (values
-  ('Salmon fillet', 'lb', 14.99),
-  ('Whole salmon', 'lb', 10.99),
-  ('Tilapia fillet', 'lb', 8.99),
-  ('Flounder fillet', 'lb', 12.99),
-  ('Whitefish', 'lb', 9.99),
-  ('Whole carp', 'lb', 6.99),
-  ('Ground fish mix (gefilte)', 'lb', 7.99),
-  ('Gefilte fish loaf', 'each', 11.99),
-  ('Herring (pickled)', 'each', 6.49),
-  ('Branzino', 'lb', 13.99),
-  ('Red snapper', 'lb', 15.99),
-  ('Tuna steak', 'lb', 17.99)
+  ('Salmon fillet', 'kg', 17.99),
+  ('Whole salmon', 'kg', 12.99),
+  ('Cod fillet', 'kg', 16.99),
+  ('Haddock fillet', 'kg', 15.99),
+  ('Plaice fillet', 'kg', 14.99),
+  ('Sea bass', 'kg', 18.99),
+  ('Whole carp', 'kg', 8.99),
+  ('Ground fish mix (gefilte)', 'kg', 9.99),
+  ('Gefilte fish loaf', 'each', 6.99),
+  ('Herring (pickled)', 'each', 4.99),
+  ('Whole trout', 'kg', 11.99),
+  ('Tuna steak', 'kg', 24.99)
 ) as v(name, unit, price)
 where not exists (select 1 from products);

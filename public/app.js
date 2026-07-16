@@ -36,8 +36,11 @@ const NEXT_STATUSES = {
   },
 };
 
+const UNITS = ['kg', 'lb', 'each', 'piece'];
+
 let products = [];
 let settings = {};
+let currentUser = null;
 
 // ---------- helpers ----------
 
@@ -49,44 +52,11 @@ async function api(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {
-    showLoginOverlay();
+    location.reload(); // session expired — reload lands on the login page
     throw new Error('Please log in');
   }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
-}
-
-let loginShowing = false;
-function showLoginOverlay() {
-  if (loginShowing) return;
-  loginShowing = true;
-  openModal(`
-    <h1>🐟 Staff login</h1>
-    <div class="field"><label>Password</label>
-      <input id="login-password" type="password" autocomplete="current-password" />
-    </div>
-    <p id="login-error" class="muted" style="color:var(--red)"></p>
-    <div class="modal-actions">
-      <button class="btn primary" id="login-btn">Log in</button>
-    </div>
-  `);
-  const submit = async () => {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: $('#login-password').value }),
-    });
-    if (res.ok) {
-      location.reload();
-    } else {
-      $('#login-error').textContent = 'Wrong password — try again.';
-      $('#login-password').value = '';
-      $('#login-password').focus();
-    }
-  };
-  $('#login-btn').addEventListener('click', submit);
-  $('#login-password').addEventListener('keydown', (e) => e.key === 'Enter' && submit());
-  $('#login-password').focus();
 }
 
 function toast(message, isError = false) {
@@ -104,12 +74,21 @@ function esc(s) {
 }
 
 function money(n) {
-  return `$${Number(n || 0).toFixed(2)}`;
+  return `£${Number(n || 0).toFixed(2)}`;
 }
 
+// Displays ISO dates (YYYY-MM-DD) as UK format (DD/MM/YYYY).
 function fmtDate(d) {
   if (!d) return '—';
-  return d;
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : d;
+}
+
+// "2026-07-16 17:26" → "16/07/2026 17:26"
+function fmtDateTime(d) {
+  if (!d) return '—';
+  const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}:\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}` : fmtDate(d);
 }
 
 function badge(text, cls) {
@@ -135,7 +114,7 @@ function closeModal() {
 }
 
 $('#modal-backdrop').addEventListener('click', (e) => {
-  if (e.target.id === 'modal-backdrop' && !loginShowing) closeModal();
+  if (e.target.id === 'modal-backdrop') closeModal();
 });
 
 // ---------- navigation ----------
@@ -157,6 +136,10 @@ $$('.nav-btn').forEach((btn) =>
   btn.addEventListener('click', () => navigate(btn.dataset.view))
 );
 $('#new-order-btn').addEventListener('click', () => openNewOrderModal());
+$('#logout-btn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  location.reload();
+});
 
 // ---------- shared renderers ----------
 
@@ -171,7 +154,7 @@ function ordersTable(orders, { showDate = true } = {}) {
         <td>${badge(o.type, o.type)}</td>
         ${showDate ? `<td>${esc(fmtDate(o.due_date))}${o.time_slot ? `<br><span class="muted">${esc(o.time_slot)}</span>` : ''}</td>` : ''}
         <td>${statusBadge(o.status)}</td>
-        <td>${money(o.total)}</td>
+        <td><strong>${money(o.total)}</strong></td>
       </tr>`
     )
     .join('');
@@ -196,13 +179,18 @@ views.dashboard = async function renderDashboard() {
   const token = navToken;
   const d = await api('/dashboard');
   if (token !== navToken) return;
+  const stat = (num, label, ico, bg, color) => `
+    <div class="stat">
+      <div class="stat-ico" style="background:${bg};color:${color}">${ico}</div>
+      <div><div class="num">${num}</div><div class="label">${label}</div></div>
+    </div>`;
   main.innerHTML = `
-    <div class="view-header"><h1>Today — ${esc(d.today)}</h1></div>
+    <div class="view-header"><h1>Today — ${esc(fmtDate(d.today))}</h1></div>
     <div class="stats">
-      <div class="stat"><div class="num">${d.counts.open_orders || 0}</div><div class="label">Open orders</div></div>
-      <div class="stat"><div class="num">${d.counts.new_orders || 0}</div><div class="label">New (unconfirmed)</div></div>
-      <div class="stat"><div class="num">${d.counts.deliveries_today || 0}</div><div class="label">Deliveries today</div></div>
-      <div class="stat"><div class="num">${d.counts.out_for_delivery || 0}</div><div class="label">Out for delivery</div></div>
+      ${stat(d.counts.open_orders || 0, 'Open orders', '🧾', 'var(--accent-soft)', 'var(--accent)')}
+      ${stat(d.counts.new_orders || 0, 'New (unconfirmed)', '✳️', 'var(--blue-soft)', 'var(--blue)')}
+      ${stat(d.counts.deliveries_today || 0, 'Deliveries today', '🚚', 'var(--violet-soft)', 'var(--violet)')}
+      ${stat(d.counts.out_for_delivery || 0, 'Out for delivery', '🛵', 'var(--amber-soft)', 'var(--amber)')}
     </div>
     <h2>Due today</h2>
     ${ordersTable(d.todayOrders, { showDate: false })}
@@ -284,7 +272,7 @@ views.deliveries = async function renderDeliveries() {
           <td>${esc(o.address || '—')}</td>
           <td>${esc(o.time_slot || '—')}</td>
           <td>${statusBadge(o.status)}</td>
-          <td>${money(o.total)}</td>
+          <td><strong>${money(o.total)}</strong></td>
         </tr>`
       )
       .join('');
@@ -307,7 +295,7 @@ views.customers = async function renderCustomers() {
       <h1>Customers</h1>
       <div class="filters">
         <input id="c-q" placeholder="Search name / phone / address" />
-        <button class="btn primary" id="c-add">+ Add customer</button>
+        <button class="btn primary" id="c-add">＋ Add customer</button>
       </div>
     </div>
     <div id="customers-list"></div>
@@ -350,7 +338,7 @@ function openCustomerForm(customer = null) {
   openModal(`
     <h1>${customer ? 'Edit customer' : 'New customer'}</h1>
     <div class="field"><label>Name</label><input id="cf-name" value="${esc(customer?.name || '')}" /></div>
-    <div class="field"><label>Phone</label><input id="cf-phone" value="${esc(customer?.phone || '')}" placeholder="+1 555 123 4567" /></div>
+    <div class="field"><label>Phone</label><input id="cf-phone" value="${esc(customer?.phone || '')}" placeholder="07911 123456" /></div>
     <div class="field"><label>Address</label><input id="cf-address" value="${esc(customer?.address || '')}" /></div>
     <div class="field"><label>Notes</label><textarea id="cf-notes" rows="2">${esc(customer?.notes || '')}</textarea></div>
     <div class="modal-actions">
@@ -443,26 +431,25 @@ views.products = async function renderProducts() {
   main.innerHTML = `
     <div class="view-header">
       <h1>Products</h1>
-      <button class="btn primary" id="p-add">+ Add product</button>
+      <button class="btn primary" id="p-add">＋ Add product</button>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Unit</th><th>Price</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Price</th><th>Status</th><th></th></tr></thead>
       <tbody>
         ${list
           .map(
             (p) => `
           <tr>
-            <td>${esc(p.name)}</td>
-            <td>${esc(p.unit)}</td>
+            <td><strong>${esc(p.name)}</strong></td>
             <td>${money(p.price)} / ${esc(p.unit)}</td>
             <td>${p.active ? badge('Active', 'ready') : badge('Hidden', 'cancelled')}</td>
-            <td>
+            <td style="text-align:right">
               <button class="btn small" data-edit="${p.id}">Edit</button>
               <button class="btn small ${p.active ? 'danger' : ''}" data-toggle="${p.id}">${p.active ? 'Hide' : 'Show'}</button>
             </td>
           </tr>`
           )
-          .join('') || '<tr><td colspan="5" class="empty">No products. Add your fish and prices.</td></tr>'}
+          .join('') || '<tr><td colspan="4" class="empty">No products. Add your fish and prices.</td></tr>'}
       </tbody>
     </table></div>
   `;
@@ -486,10 +473,10 @@ function openProductForm(product = null) {
     <div class="row">
       <div class="field"><label>Unit</label>
         <select id="pf-unit">
-          ${['lb', 'kg', 'each', 'piece'].map((u) => `<option ${product?.unit === u ? 'selected' : ''}>${u}</option>`).join('')}
+          ${UNITS.map((u) => `<option ${product?.unit === u ? 'selected' : ''}>${u}</option>`).join('')}
         </select>
       </div>
-      <div class="field"><label>Price per unit</label><input id="pf-price" type="number" step="0.01" min="0" value="${product?.price ?? ''}" /></div>
+      <div class="field"><label>Price per unit (£)</label><input id="pf-price" type="number" step="0.01" min="0" value="${product?.price ?? ''}" /></div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="pf-cancel">Cancel</button>
@@ -530,7 +517,7 @@ views.messages = async function renderMessages() {
               .map(
                 (m) => `
               <tr>
-                <td class="muted">${esc(m.created_at)}</td>
+                <td class="muted">${esc(fmtDateTime(m.created_at))}</td>
                 <td>${esc(m.customer_name || '')}<br><span class="muted">${esc(m.phone)}</span></td>
                 <td class="msg-body">${esc(m.body)}</td>
                 <td>${m.order_id ? `#${m.order_id}` : '—'}</td>
@@ -548,7 +535,7 @@ views.messages = async function renderMessages() {
 
 views.settings = async function renderSettings() {
   const token = navToken;
-  const s = await api('/settings');
+  const [s, users] = await Promise.all([api('/settings'), api('/users')]);
   if (token !== navToken) return;
   const templateField = (key, label) => `
     <div class="field"><label>${label}</label>
@@ -564,14 +551,7 @@ views.settings = async function renderSettings() {
         <input type="checkbox" id="s-auto" style="width:auto" ${s.auto_sms === '1' ? 'checked' : ''} />
         Automatically text customers on status updates
       </label></div>
-    </div>
-    <div class="panel">
-      <h2 style="margin-top:0">SMS provider</h2>
-      <p class="muted" style="margin-bottom:8px">
-        ${s.twilio_configured
-          ? '✅ Twilio is configured — texts are really sent to customers.'
-          : '⚠️ Simulation mode: texts are logged but not actually sent. To send real texts, set the TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER environment variables on the server and restart (see README).'}
-      </p>
+      <button class="btn primary" id="s-save">Save settings</button>
     </div>
     <div class="panel">
       <h2 style="margin-top:0">Message templates</h2>
@@ -581,23 +561,132 @@ views.settings = async function renderSettings() {
       ${templateField('sms_out_for_delivery', 'Out for delivery')}
       ${templateField('sms_delivered', 'Delivered')}
       ${templateField('sms_cancelled', 'Cancelled')}
+      <button class="btn primary" id="s-save2">Save templates</button>
     </div>
-    <button class="btn primary big" id="s-save">Save settings</button>
-    ${s.auth_enabled ? '<button class="btn big" id="s-logout" style="margin-left:8px">Log out</button>' : ''}
+    <div class="panel">
+      <h2 style="margin-top:0">SMS provider</h2>
+      <p class="muted">
+        ${s.twilio_configured
+          ? '✅ Twilio is configured — texts are really sent to customers.'
+          : '⚠️ Simulation mode: texts are logged but not actually sent. To send real texts, set the TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER environment variables (see README).'}
+      </p>
+    </div>
+    <div class="panel">
+      <h2 style="margin-top:0">Staff accounts</h2>
+      <div class="table-wrap" style="box-shadow:none;margin-bottom:12px"><table>
+        <thead><tr><th>Name</th><th>Username</th><th>Added</th><th></th></tr></thead>
+        <tbody>
+          ${users
+            .map(
+              (u) => `
+            <tr>
+              <td><strong>${esc(u.name)}</strong>${u.id === currentUser.id ? ' <span class="muted">(you)</span>' : ''}</td>
+              <td>${esc(u.username)}</td>
+              <td class="muted">${esc(fmtDate(u.created_at))}</td>
+              <td style="text-align:right">
+                <button class="btn small" data-pw="${u.id}" data-name="${esc(u.name)}">Change password</button>
+                ${u.id !== currentUser.id ? `<button class="btn small danger" data-rm="${u.id}" data-name="${esc(u.name)}">Remove</button>` : ''}
+              </td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table></div>
+      <button class="btn" id="u-add">＋ Add staff member</button>
+    </div>
   `;
-  $('#s-logout')?.addEventListener('click', async () => {
-    await fetch('/api/logout', { method: 'POST' });
-    location.reload();
-  });
-  $('#s-save').addEventListener('click', async () => {
+  const saveSettings = async () => {
     const body = { auto_sms: $('#s-auto').checked ? '1' : '0' };
     $$('[data-setting]').forEach((el) => (body[el.dataset.setting] = el.value));
     await api('/settings', { method: 'PUT', body });
     settings = await api('/settings');
     $('#brand-name').textContent = settings.shop_name || 'Fish Shop';
     toast('Settings saved');
-  });
+  };
+  $('#s-save').addEventListener('click', saveSettings);
+  $('#s-save2').addEventListener('click', saveSettings);
+  $('#u-add').addEventListener('click', () => openUserForm());
+  $$('button[data-pw]').forEach((b) =>
+    b.addEventListener('click', () => openPasswordForm(Number(b.dataset.pw), b.dataset.name))
+  );
+  $$('button[data-rm]').forEach((b) =>
+    b.addEventListener('click', () => {
+      openModal(`
+        <h1>Remove ${esc(b.dataset.name)}?</h1>
+        <p class="muted">They will no longer be able to log in. Orders and messages are kept.</p>
+        <div class="modal-actions">
+          <button class="btn" id="rm-cancel">Cancel</button>
+          <button class="btn danger" id="rm-yes">Remove</button>
+        </div>
+      `);
+      $('#rm-cancel').addEventListener('click', closeModal);
+      $('#rm-yes').addEventListener('click', async () => {
+        try {
+          await api(`/users/${b.dataset.rm}`, { method: 'DELETE' });
+          closeModal();
+          toast('Staff member removed');
+          navigate('settings');
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    })
+  );
 };
+
+function openUserForm() {
+  openModal(`
+    <h1>Add staff member</h1>
+    <div class="field"><label>Name</label><input id="uf-name" placeholder="e.g. Dovid" /></div>
+    <div class="field"><label>Username (for login)</label><input id="uf-username" autocomplete="off" /></div>
+    <div class="field"><label>Password (at least 6 characters)</label><input id="uf-password" type="password" autocomplete="new-password" /></div>
+    <div class="modal-actions">
+      <button class="btn" id="uf-cancel">Cancel</button>
+      <button class="btn primary" id="uf-save">Add</button>
+    </div>
+  `);
+  $('#uf-cancel').addEventListener('click', closeModal);
+  $('#uf-save').addEventListener('click', async () => {
+    try {
+      await api('/users', {
+        method: 'POST',
+        body: {
+          name: $('#uf-name').value.trim(),
+          username: $('#uf-username').value.trim(),
+          password: $('#uf-password').value,
+        },
+      });
+      closeModal();
+      toast('Staff member added');
+      navigate('settings');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
+function openPasswordForm(userId, name) {
+  openModal(`
+    <h1>Change password — ${esc(name)}</h1>
+    <div class="field"><label>New password (at least 6 characters)</label>
+      <input id="pw-new" type="password" autocomplete="new-password" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="pw-cancel">Cancel</button>
+      <button class="btn primary" id="pw-save">Change</button>
+    </div>
+  `);
+  $('#pw-cancel').addEventListener('click', closeModal);
+  $('#pw-save').addEventListener('click', async () => {
+    try {
+      await api(`/users/${userId}`, { method: 'PUT', body: { password: $('#pw-new').value } });
+      closeModal();
+      toast('Password changed');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
 
 // ---------- order detail ----------
 
@@ -616,7 +705,7 @@ async function openOrderModal(id) {
       <strong>${esc(o.customer_name)}</strong> · ${esc(o.customer_phone)}
     </p>
     ${o.type === 'delivery' ? `<p class="muted">📍 ${esc(o.address || 'No address!')}</p>` : ''}
-    <p class="muted">Due: ${esc(fmtDate(o.due_date))}${o.time_slot ? ` (${esc(o.time_slot)})` : ''} · Placed: ${esc(o.created_at)}</p>
+    <p class="muted">Due: ${esc(fmtDate(o.due_date))}${o.time_slot ? ` (${esc(o.time_slot)})` : ''} · Placed: ${esc(fmtDateTime(o.created_at))}</p>
     ${o.notes ? `<p style="margin:8px 0"><em>${esc(o.notes)}</em></p>` : ''}
     <div class="table-wrap" style="margin:12px 0"><table>
       <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
@@ -641,7 +730,7 @@ async function openOrderModal(id) {
         ? `<h2>Texts for this order</h2><div class="table-wrap"><table><tbody>${o.messages
             .map(
               (m) =>
-                `<tr><td class="muted">${esc(m.created_at)}</td><td class="msg-body">${esc(m.body)}</td><td>${badge(m.status, m.status)}</td></tr>`
+                `<tr><td class="muted">${esc(fmtDateTime(m.created_at))}</td><td class="msg-body">${esc(m.body)}</td><td>${badge(m.status, m.status)}</td></tr>`
             )
             .join('')}</tbody></table></div>`
         : ''
@@ -711,8 +800,8 @@ async function openNewOrderModal(customer = null) {
     <label>Items</label>
     <div class="items-editor">
       <div id="no-items"></div>
-      <button class="btn small" id="no-add-item">+ Add item</button>
-      <div class="order-total" id="no-total">Total: $0.00</div>
+      <button class="btn small" id="no-add-item">＋ Add item</button>
+      <div class="order-total" id="no-total">Total: £0.00</div>
     </div>
     <div class="field"><label>Order notes</label><input id="no-notes" placeholder="e.g. filleted, no skin" /></div>
     <div class="modal-actions">
@@ -741,9 +830,9 @@ async function openNewOrderModal(customer = null) {
     row.innerHTML = `
       <select class="it-product">${productOptions()}</select>
       <input class="it-qty" type="number" step="0.25" min="0" value="1" title="Quantity" />
-      <select class="it-unit">${['lb', 'kg', 'each', 'piece'].map((u) => `<option>${u}</option>`).join('')}</select>
-      <input class="it-price" type="number" step="0.01" min="0" placeholder="$/unit" title="Price per unit" />
-      <div class="line-total">$0.00</div>
+      <select class="it-unit">${UNITS.map((u) => `<option>${u}</option>`).join('')}</select>
+      <input class="it-price" type="number" step="0.01" min="0" placeholder="£/unit" title="Price per unit" />
+      <div class="line-total">£0.00</div>
       <button class="item-remove" title="Remove">✕</button>
     `;
     itemsEl.appendChild(row);
@@ -860,10 +949,63 @@ async function openNewOrderModal(customer = null) {
   });
 }
 
+// ---------- auth pages (login / first-run setup) ----------
+
+function renderAuthPage(mode) {
+  document.body.classList.add('auth-mode');
+  const isSetup = mode === 'setup';
+  main.innerHTML = `
+    <div class="auth-page">
+      <div class="auth-card">
+        <div class="auth-logo">🐟</div>
+        <h1>${isSetup ? 'Welcome!' : 'Fish Shop Manager'}</h1>
+        <p class="auth-sub">${
+          isSetup
+            ? 'Set up the first staff account for your shop. You can add more staff later in Settings.'
+            : 'Log in to manage orders and deliveries.'
+        }</p>
+        ${isSetup ? '<div class="field"><label>Your name</label><input id="a-name" placeholder="e.g. Leiby" /></div>' : ''}
+        <div class="field"><label>Username</label><input id="a-username" autocomplete="username" /></div>
+        <div class="field"><label>Password${isSetup ? ' (at least 6 characters)' : ''}</label>
+          <input id="a-password" type="password" autocomplete="${isSetup ? 'new-password' : 'current-password'}" />
+        </div>
+        <div class="auth-error" id="a-error"></div>
+        <button class="btn primary big" id="a-submit">${isSetup ? 'Create account' : 'Log in'}</button>
+      </div>
+    </div>
+  `;
+  const submit = async () => {
+    $('#a-error').textContent = '';
+    const body = {
+      username: $('#a-username').value.trim(),
+      password: $('#a-password').value,
+    };
+    if (isSetup) body.name = $('#a-name').value.trim();
+    const res = await fetch(isSetup ? '/api/setup' : '/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) location.reload();
+    else $('#a-error').textContent = data.error || 'Something went wrong';
+  };
+  $('#a-submit').addEventListener('click', submit);
+  $$('.auth-card input').forEach((el) =>
+    el.addEventListener('keydown', (e) => e.key === 'Enter' && submit())
+  );
+  $(isSetup ? '#a-name' : '#a-username').focus();
+}
+
 // ---------- boot ----------
 
 (async function init() {
   try {
+    const me = await (await fetch('/api/auth/me')).json();
+    if (me.setup_required) return renderAuthPage('setup');
+    if (!me.authenticated) return renderAuthPage('login');
+    currentUser = me.user;
+    $('#user-name').textContent = me.user.name;
     [products, settings] = await Promise.all([api('/products'), api('/settings')]);
     $('#brand-name').textContent = settings.shop_name || 'Fish Shop';
     $('#sms-mode').textContent = settings.twilio_configured
